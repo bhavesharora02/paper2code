@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+
+# Data and artifacts
+data/
+runs/
+artifacts/
+*.ckpt
+*.pt
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Temp and packages
+*.egg-info/
+dist/
+build/
