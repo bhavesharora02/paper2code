@@ -1,0 +1,81 @@
+{
+  "paper_id": "cv_vit",
+  "title": "PublishedasaconferencepaperatICLR2021",
+  "domain": "cv",
+  "task": "image-classification",
+  "model": {
+    "architecture": "ViT-H/14",
+    "task_type": "image-classification",
+    "layers": [
+      {
+        "name": "Patch Embedding",
+        "type": "Linear",
+        "params": {
+          "input_dim": 1024,
+          "output_dim": 1280
+        }
+      },
+      {
+        "name": "Position Embedding",
+        "type": "Embedding",
+        "params": {
+          "num_embeddings": 197,
+          "embedding_dim": 1280
+        }
+      },
+      {
+        "name": "Transformer Encoder",
+        "type": "TransformerEncoder",
+        "params": {
+          "num_layers": 32,
+          "hidden_size": 1280,
+          "mlp_size": 5120,
+          "num_heads": 16
+        }
+      },
+      {
+        "name": "Classification Head",
+        "type": "Linear",
+        "params": {
+          "input_dim": 1280,
+          "output_dim": 1000
+        }
+      }
+    ],
+    "loss": null,
+    "optimizer": "Adam"
+  },
+  "hyperparameters": {
+    "learning_rate": null,
+    "batch_size": 4096,
+    "epochs": null,
+    "weight_decay": 0.1
+  },
+  "dataset": {
+    "name": "ImageNet, CIFAR-10/100, Oxford-IIITPets, OxfordFlowers-102, VTAB",
+    "train_split": null,
+    "val_split": null,
+    "test_split": null,
+    "input_size": [
+      3,
+      518,
+      518
+    ],
+    "num_classes": 1000
+  },
+  "expected_metrics": [
+    {
+      "key": "accuracy",
+      "target": 0.8855,
+      "tolerance_pct": 5.0
+    }
+  ],
+  "notes": "Pretrained on JFT-300M dataset. Fine-tuned at higher resolution (518x518). Used Polyak&Juditsky averaging with a factor of 0.9999.",
+  "uncertain": [
+    "learning_rate",
+    "epochs",
+    "loss function used for pretraining and fine-tuning",
+    "exact details of learning rate schedule",
+    "train/val/test split details for each dataset"
+  ]
+}

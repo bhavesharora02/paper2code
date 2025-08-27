@@ -1,0 +1,55 @@
+{
+  "paper_id": "nlp_bert",
+  "title": "BERT: Pre-training of Deep Bidirectional Transformers for",
+  "domain": "nlp",
+  "task": "language understanding",
+  "model": {
+    "architecture": "BERT-base",
+    "task_type": "sequence-classification",
+    "layers": [
+      {
+        "name": "transformer_encoder",
+        "type": "TransformerEncoder",
+        "params": {
+          "num_layers": 12,
+          "hidden_size": 768,
+          "num_attention_heads": 12,
+          "intermediate_size": 3072
+        }
+      }
+    ],
+    "loss": null,
+    "optimizer": "AdamW"
+  },
+  "hyperparameters": {
+    "learning_rate": null,
+    "batch_size": null,
+    "epochs": null,
+    "weight_decay": null
+  },
+  "dataset": {
+    "name": "glue-sst2",
+    "train_split": null,
+    "val_split": null,
+    "test_split": null,
+    "input_size": null,
+    "num_classes": null
+  },
+  "expected_metrics": [],
+  "notes": null,
+  "uncertain": [
+    "paper_id",
+    "learning_rate",
+    "batch_size",
+    "epochs",
+    "weight_decay",
+    "dataset.name",
+    "dataset.train_split",
+    "dataset.val_split",
+    "dataset.test_split",
+    "dataset.input_size",
+    "dataset.num_classes",
+    "expected_metrics",
+    "model.loss"
+  ]
+}

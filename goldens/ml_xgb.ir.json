@@ -1,0 +1,40 @@
+{
+  "paper_id": "ml_xgb",
+  "title": "XGBoost: A Scalable Tree Boosting System",
+  "domain": "ml",
+  "task": "gradient boosting",
+  "model": {
+    "architecture": "XGBoost",
+    "task_type": null,
+    "layers": [],
+    "loss": null,
+    "optimizer": null
+  },
+  "hyperparameters": {
+    "learning_rate": null,
+    "batch_size": null,
+    "epochs": null,
+    "weight_decay": null
+  },
+  "dataset": {
+    "name": "uci_credit",
+    "train_split": null,
+    "val_split": null,
+    "test_split": null,
+    "input_size": null,
+    "num_classes": null
+  },
+  "expected_metrics": [],
+  "notes": "Paper describes the XGBoost algorithm, including the split finding algorithms (exact greedy and approximate) and techniques like shrinkage and column subsampling for preventing overfitting.",
+  "uncertain": [
+    "task_type",
+    "loss",
+    "optimizer",
+    "learning_rate",
+    "batch_size",
+    "epochs",
+    "weight_decay",
+    "dataset",
+    "expected_metrics"
+  ]
+}
