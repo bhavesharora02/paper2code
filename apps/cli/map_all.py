@@ -29,7 +29,8 @@ def main():
             continue
 
         ir = json.loads(ir_path.read_text(encoding="utf-8"))
-        mapping = map_ir(ir, use_llm=(not args.no_llm))
+        # pass run_dir so agent can log raw LLM responses into the run folder
+        mapping = map_ir(ir, use_llm=(not args.no_llm), run_dir=run_dir)
         out_path = write_mapping(run_dir, mapping)
         print(f"[map_all] Wrote mapping to {out_path}")
 
