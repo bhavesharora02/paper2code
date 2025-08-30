@@ -1,0 +1,85 @@
+{{ header_comment }}
+import json
+from pathlib import Path
+from typing import Tuple
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+try:
+    from transformers import AutoTokenizer
+except Exception:
+    AutoTokenizer = None
+
+# Optional HF preprocessing/tokenizer from mapping
+{{ preprocessing_imports | safe }}
+
+class TinyTextDataset(Dataset):
+    def __init__(self, tokenizer, max_length=128, split='train'):
+        data = [
+            ("good movie great acting", 1),
+            ("bad plot boring scenes", 0),
+            ("excellent visuals and story", 1),
+            ("terrible pacing and sound", 0),
+        ]
+        self.texts = [t for t, _ in data]
+        self.labels = torch.tensor([y for _, y in data], dtype=torch.long)
+        self.tok = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        t = self.texts[idx]
+        enc = self.tok(
+            t,
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors='pt'
+        )
+        enc = {k: v.squeeze(0) for k, v in enc.items()}
+        return {"inputs": enc, "labels": self.labels[idx]}
+
+
+class TinyImageDataset(Dataset):
+    def __init__(self, size=(3, 64, 64), num_classes={{ num_classes or 2 }}, length=64):
+        self.size = size
+        self.length = length
+        self.num_classes = num_classes
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        x = torch.rand(self.size)
+        y = torch.randint(0, self.num_classes, (1,)).item()
+        return {"inputs": x, "labels": torch.tensor(y, dtype=torch.long)}
+
+
+def build_dataloaders(config_path: str = None) -> Tuple[DataLoader, DataLoader]:
+    # Configure tokenizer / processor
+    tokenizer = None
+    # Use tokenizer only if mapping provided one or task looks like NLP
+    try:
+        if '{{ task_type or "" }}'.lower().startswith('sequence') or {{ 'True' if 'text_tokenizer' in preprocessing_imports else 'False' }}:
+            tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased') if AutoTokenizer else None
+        else:
+            tokenizer = None
+    except Exception:
+        tokenizer = None
+
+    task_type = "{{ task_type or '' }}"
+    batch_size = int({{ batch_size or 8 }})
+
+    if task_type.startswith('sequence') or tokenizer is not None:
+        ds_train = TinyTextDataset(tokenizer)
+        ds_val = TinyTextDataset(tokenizer)
+    else:
+        ds_train = TinyImageDataset()
+        ds_val = TinyImageDataset()
+
+    train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(ds_val, batch_size=batch_size)
+    return train_loader, val_loader

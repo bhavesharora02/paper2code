@@ -1,0 +1,78 @@
+{{ header_comment }}
+import os
+import json
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+try:
+    import torchvision
+    from torchvision import transforms
+    HAS_TV = True
+except Exception:
+    HAS_TV = False
+
+# Import model, loss, optimizer constructed in model.py
+from model import model, loss_fn, optimizer
+from data_loader import build_dataloaders
+
+
+def train_one_epoch(model, loader, loss_fn, optimizer, device):
+    model.train()
+    total_loss = 0.0
+    for batch in loader:
+        inputs = batch["inputs"].to(device)
+        labels = batch["labels"].to(device)
+        outputs = model(**inputs) if isinstance(inputs, dict) else model(inputs)
+        logits = getattr(outputs, 'logits', outputs)
+        loss = loss_fn(logits, labels)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item())
+    return total_loss / max(1, len(loader))
+
+
+def evaluate(model, loader, loss_fn, device):
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch in loader:
+            inputs = batch["inputs"].to(device)
+            labels = batch["labels"].to(device)
+            outputs = model(**inputs) if isinstance(inputs, dict) else model(inputs)
+            logits = getattr(outputs, 'logits', outputs)
+            loss = loss_fn(logits, labels)
+            preds = torch.argmax(logits, dim=-1)
+            total_correct += (preds == labels).sum().item()
+            total += labels.numel()
+            total_loss += float(loss.item())
+    acc = total_correct / max(1, total)
+    return {"loss": total_loss / max(1, len(loader)), "accuracy": acc}
+
+
+def main(config_path: str = None):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+
+    train_loader, val_loader = build_dataloaders(config_path)
+
+    epochs = {{ epochs or 1 }}
+    metrics = {}
+    for ep in range(epochs):
+        tr_loss = train_one_epoch(model, train_loader, loss_fn, optimizer, device)
+        val = evaluate(model, val_loader, loss_fn, device)
+        print(f"[train] epoch={ep+1} loss={tr_loss:.4f} val_loss={val['loss']:.4f} val_acc={val['accuracy']:.4f}")
+        metrics = {"epoch": ep+1, "train_loss": tr_loss, **val}
+
+    # Write metrics.json beside this file
+    out = Path(__file__).resolve().parent / 'metrics.json'
+    out.write_text(json.dumps(metrics, indent=2))
+    print(f"[trainer] wrote {out}")
+
+
+if __name__ == "__main__":
+    main()

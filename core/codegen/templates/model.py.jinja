@@ -1,0 +1,10 @@
+{{ header_comment }}
+{{ imports|join('\n') }}
+
+# Construct the model from mapping (rendered verbatim)
+# NOTE: mapping provides a Python expression (e.g. 'ViTForImageClassification.from_pretrained("...", num_labels=2)')
+model = {{ model_constructor | safe or 'None' }}
+
+# Optional loss & optimizer placeholders (keep simple defaults if missing)
+loss_fn = {{ loss_constructor | safe or 'torch.nn.CrossEntropyLoss()' }}
+optimizer = {{ optimizer_constructor | safe or "torch.optim.Adam(model.parameters(), lr=5e-4)" }}
