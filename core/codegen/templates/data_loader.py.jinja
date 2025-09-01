@@ -1,8 +1,8 @@
-{{ header_comment }}
-import json
-from pathlib import Path
-from typing import Tuple
+{% set mapping = mapping if mapping is defined else {} %}
+{% set ir = ir if ir is defined else {} %}
+{% set header_comment = header_comment if header_comment is defined else '' %}
 
+# Generated from {{ run_dir }} — DO NOT EDIT by hand
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -11,69 +11,77 @@ try:
 except Exception:
     AutoTokenizer = None
 
-# Optional HF preprocessing/tokenizer from mapping
-{{ preprocessing_imports | safe }}
-
+# --- Tiny datasets for smoke ---
 class TinyTextDataset(Dataset):
-    def __init__(self, tokenizer, max_length=128, split='train'):
-        data = [
+    def __init__(self, tokenizer=None, max_length=128, length=64):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        # tiny toy corpus (binary labels)
+        self.data = [
             ("good movie great acting", 1),
             ("bad plot boring scenes", 0),
             ("excellent visuals and story", 1),
             ("terrible pacing and sound", 0),
-        ]
-        self.texts = [t for t, _ in data]
-        self.labels = torch.tensor([y for _, y in data], dtype=torch.long)
-        self.tok = tokenizer
-        self.max_length = max_length
+        ] * (length // 4)
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        t = self.texts[idx]
-        enc = self.tok(
-            t,
+        text, y = self.data[idx]
+        if self.tokenizer is None:
+            # produce a dummy tensor feature if tokenizer missing
+            x = torch.randn(768)
+            return {"inputs": x, "labels": torch.tensor(y, dtype=torch.long)}
+        enc = self.tokenizer(
+            text,
             padding='max_length',
             truncation=True,
             max_length=self.max_length,
-            return_tensors='pt'
+            return_tensors='pt',
         )
+        # squeeze batch dim
         enc = {k: v.squeeze(0) for k, v in enc.items()}
-        return {"inputs": enc, "labels": self.labels[idx]}
-
+        return {"inputs": enc, "labels": torch.tensor(y, dtype=torch.long)}
 
 class TinyImageDataset(Dataset):
-    def __init__(self, size=(3, 64, 64), num_classes={{ num_classes or 2 }}, length=64):
-        self.size = size
-        self.length = length
-        self.num_classes = num_classes
+    def __init__(self, size=224, num_classes={{ ir.get('dataset', {}).get('num_classes') or 2 }}, length=32):
+        # Use 224x224 to match common pretrained ViT/ResNet defaults
+        self.size = int(size)
+        self.length = int(length)
+        self.num_classes = int(num_classes)
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        x = torch.rand(self.size)
+        x = torch.rand(3, self.size, self.size)
         y = torch.randint(0, self.num_classes, (1,)).item()
+        # Return a plain Tensor; Trainer will wrap as pixel_values when needed
         return {"inputs": x, "labels": torch.tensor(y, dtype=torch.long)}
 
 
-def build_dataloaders(config_path: str = None) -> Tuple[DataLoader, DataLoader]:
-    # Configure tokenizer / processor
-    tokenizer = None
-    # Use tokenizer only if mapping provided one or task looks like NLP
+def build_dataloaders(config_path: str = None):
+    # Decide modality from IR
+    TASK = "{{ (ir.get('model', {}).get('task_type') or ir.get('task') or '')|lower }}"
+    DOMAIN = "{{ (ir.get('domain') or '')|lower }}"
+    is_text = ("nlp" in DOMAIN) or ("sequence" in TASK) or ("text" in TASK)
+
+    # Keep batch size tiny for smoke
     try:
-        if '{{ task_type or "" }}'.lower().startswith('sequence') or {{ 'True' if 'text_tokenizer' in preprocessing_imports else 'False' }}:
-            tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased') if AutoTokenizer else None
-        else:
-            tokenizer = None
+        batch_size = int({{ ir.get('hyperparameters', {}).get('batch_size') or 8 }})
     except Exception:
-        tokenizer = None
+        batch_size = 8
+    batch_size = max(1, min(batch_size, 8))
 
-    task_type = "{{ task_type or '' }}"
-    batch_size = int({{ batch_size or 8 }})
+    tokenizer = None
+    if is_text and AutoTokenizer is not None:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        except Exception:
+            tokenizer = None
 
-    if task_type.startswith('sequence') or tokenizer is not None:
+    if is_text:
         ds_train = TinyTextDataset(tokenizer)
         ds_val = TinyTextDataset(tokenizer)
     else:

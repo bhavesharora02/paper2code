@@ -1,4 +1,8 @@
-# Generated from {{ run_dir }} — DO NOT EDIT by hand
+# tools/patch_model_template_safe.py
+from pathlib import Path
+TPL = Path(__file__).resolve().parents[1] / "core" / "codegen" / "templates" / "model.py.jinja"
+
+SAFE_TEMPLATE = r'''# Generated from {{ run_dir }} — DO NOT EDIT by hand
 import torch
 
 # Optional imports provided by mapping (rendered defensively)
@@ -95,3 +99,9 @@ except Exception:
         tmp = torch.nn.Parameter(torch.randn(1))
         optimizer = torch.optim.Adam([tmp], lr=1e-3)
         print("[model] created dummy optimizer due to failure constructing from model.")
+'''
+
+# Write template (idempotent)
+TPL.parent.mkdir(parents=True, exist_ok=True)
+TPL.write_text(SAFE_TEMPLATE, encoding='utf-8')
+print("Wrote safe model.py.jinja to", TPL)

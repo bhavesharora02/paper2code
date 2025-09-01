@@ -14,6 +14,18 @@ import json
 import sys
 import argparse
 from pathlib import Path
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+from patches_week5 import safe_templates # Updated to use safe templates by default
+
+
+def bootstrap():
+    print("Bootstrapping with safe templates...")
+    safe_templates()
 
 ROOT = Path(__file__).resolve().parents[1]
 

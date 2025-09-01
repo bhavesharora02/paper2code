@@ -1,15 +1,18 @@
+{% set mapping = mapping if mapping is defined else {} %}
+{% set ir = ir if ir is defined else {} %}
+{% set header_comment = header_comment if header_comment is defined else '' %}
+
 # Generated Repo (Smoke Mode)
 
 This folder was generated from IR + mapping.
 
 ## Files
-- `model.py` — constructs model/loss/optimizer using mapping
+- `model.py` — constructs model/loss/optimizer using mapping (with safe fallbacks)
 - `data_loader.py` — tiny text/image datasets for smoke tests
 - `trainer.py` — minimal training/eval loop; writes `metrics.json`
 - `config.yaml` — basic config derived from IR
 
-## Run (smoke test)
+## Run
 ```bash
-cd runs/{{ run_pkg.split('.')[-1] }}/repo
-python trainer.py
+python -m {{ run_module }}
 ```

@@ -1,7 +1,11 @@
+{% set mapping = mapping if mapping is defined else {} %}
+{% set ir = ir if ir is defined else {} %}
+{% set header_comment = header_comment if header_comment is defined else '' %}
+
 # Auto-generated config for smoke training
-paper_id: {{ paper_id }}
-framework: {{ framework or 'unknown' }}
-model: {{ architecture or 'unknown' }}
-num_classes: {{ num_classes or 2 }}
-batch_size: {{ batch_size or 8 }}
-epochs: {{ epochs or 1 }}
+paper_id: {{ ir.paper_id }}
+framework: {{ mapping.framework }}
+model: {{ ir.get('model', {}).get('architecture') or ir.get('model', {}).get('task_type') or 'unknown' }}
+num_classes: {{ ir.get('dataset', {}).get('num_classes') or 2 }}
+batch_size: {{ (ir.get('hyperparameters', {}).get('batch_size') or 8) | int if (ir.get('hyperparameters', {}) and ir.get('hyperparameters', {}).get('batch_size')) else 8 }}
+epochs: 1
