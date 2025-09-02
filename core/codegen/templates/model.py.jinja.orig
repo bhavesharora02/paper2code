@@ -1,0 +1,68 @@
+# Generated from {{ run_dir }} — DO NOT EDIT by hand
+import torch
+
+# guarded imports block - always yields an indented body for 'try:'
+try:
+{% if mapping and mapping.imports %}
+{% for line in mapping.imports %}
+    {{ line }}
+{% endfor %}
+{% else %}
+    # no mapping imports available; keep this block syntactically valid
+    pass
+{% endif %}
+except Exception as e:
+    print(f"[model] optional import failed: {e}")
+
+# Try the catalog/LLM constructor; on failure fall back to a tiny classifier.
+model = None
+try:
+    model = {{ mapping.model_constructor | default("None") }}
+except Exception as e:
+    print(f"[model] constructor failed: {e}")
+    # Fallback tiny model (works for text/image smoke tests)
+    class _TinyFallback(torch.nn.Module):
+        def __init__(self, num_classes={{ (ir.dataset.num_classes | default(2)) }} , hidden=256):
+            super().__init__()
+            # Accept either feature vector or image tensor
+            self.hidden = hidden
+            self.flatten = torch.nn.Flatten()
+            self.fc1 = torch.nn.Linear(self.hidden, 128)
+            self.relu = torch.nn.ReLU()
+            self.fc2 = torch.nn.Linear(128, num_classes)
+
+        def forward(self, x):
+            # if mapping produced a dict (HF inputs), take one tensor
+            if isinstance(x, dict):
+                x = next(iter(x.values()))
+            # flatten to (B, -1)
+            if isinstance(x, torch.Tensor) and x.dim() > 2:
+                x = self.flatten(x)
+            # If flattened size mismatches hidden, project
+            if isinstance(x, torch.Tensor) and x.size(-1) != self.hidden:
+                # project to expected hidden size
+                x = torch.nn.functional.adaptive_avg_pool1d(x.unsqueeze(0), self.hidden).squeeze(0) if x.dim() == 2 else torch.zeros(x.size(0), self.hidden)
+            out = self.fc1(x)
+            out = self.relu(out)
+            return self.fc2(out)
+    model = _TinyFallback()
+
+# Loss & optimizer: be robust if model is None or has no parameters
+try:
+    loss_fn = {{ mapping.loss_constructor | default("torch.nn.CrossEntropyLoss()") }}
+except Exception:
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+try:
+    # attempt mapping's optimizer; fallback if model has no params
+    optimizer = {{ mapping.optimizer_constructor | default("torch.optim.Adam(model.parameters(), lr=1e-3)") }}
+except Exception as e:
+    print(f"[model] optimizer construction failed: {e}")
+    try:
+        params = [p for p in model.parameters() if p.requires_grad]
+        if not params:
+            raise RuntimeError("no model parameters found")
+        optimizer = torch.optim.Adam(params, lr=1e-3)
+    except Exception:
+        # as last resort, create a dummy optim on an empty parameter list (won't train, but avoids crash)
+        optimizer = torch.optim.SGD([], lr=1e-3)

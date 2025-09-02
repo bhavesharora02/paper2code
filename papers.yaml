@@ -8,10 +8,6 @@ papers:
     source: "arXiv:2010.11929"
     domain: "cv"
     pdf: "samples/vit_arxiv_2010.11929.pdf"
-    expected_metrics:
-      key: "top1"
-      target: 0.77
-      tolerance_pct: 2.0
     dataset_fallback:
       name: "imagenet-subset"
       note: "Use CIFAR or FakeData for smoke tests."

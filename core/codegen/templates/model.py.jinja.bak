@@ -1,0 +1,104 @@
+# Generated from {{ run_dir }} — DO NOT EDIT by hand
+import torch
+import torch.nn as nn
+
+# Optional imports from mapping (best-effort, do not crash if missing)
+try:
+{% if mapping and mapping.imports %}
+{% for line in mapping.imports %}
+{{ line }}
+{% endfor %}
+{% endif %}
+except Exception as _e:
+    print(f"[model] optional import failed: {_e}")
+
+# Try to instantiate the mapped model if provided
+model = None
+try:
+    # Mapping may provide a constructor expression in `mapping.model_constructor`.
+    # The generator renders that expression directly in the file; keep a safe try/except.
+    {% if mapping and mapping.model_constructor %}
+    model = {{ mapping.model_constructor }}
+    {% else %}
+    # No mapping constructor provided — we'll fall back below.
+    pass
+    {% endif %}
+except Exception as _e:
+    print(f"[model] constructor failed: {_e}")
+
+# -------------------- Robust fallback --------------------
+if model is None:
+    # This fallback adapts to arbitrary input shapes by initializing on first forward.
+    class _RobustFallback(nn.Module):
+        def __init__(self, num_classes: int = {{ ir.dataset.num_classes or 2 }}, hidden: int = 256):
+            super().__init__()
+            self.num_classes = int(num_classes)
+            self.hidden = int(hidden)
+            self.flatten = nn.Flatten()
+            # prefer native LazyLinear if available
+            if hasattr(nn, 'LazyLinear'):
+                self.fc1 = nn.LazyLinear(self.hidden)
+            else:
+                # simple first-call init linear
+                self.fc1 = None
+                self._fc1_weight = None
+                self._fc1_bias = None
+            self.act = nn.ReLU()
+            self.fc2 = nn.Linear(self.hidden, self.num_classes)
+
+        def _unwrap(self, x):
+            if isinstance(x, dict):
+                for key in ('pixel_values', 'input_values', 'input_ids', 'inputs'):
+                    if key in x and torch.is_tensor(x[key]):
+                        return x[key]
+                for v in x.values():
+                    if torch.is_tensor(v):
+                        return v
+                raise ValueError('no tensor found in input dict')
+            return x
+
+        def _ensure_fc1(self, in_features):
+            if getattr(self, 'fc1', None) is not None:
+                return
+            # create weights/bias on first call
+            w = nn.Parameter(torch.randn(self.hidden, in_features) * 0.02)
+            b = nn.Parameter(torch.zeros(self.hidden))
+            self.register_parameter('_fc1_weight', w)
+            self.register_parameter('_fc1_bias', b)
+
+        def _apply_fc1(self, x):
+            if getattr(self, 'fc1', None) is not None:
+                return self.fc1(x)
+            # else use manually created params
+            if getattr(self, '_fc1_weight', None) is None:
+                self._ensure_fc1(x.shape[-1])
+            return torch.nn.functional.linear(x, self._fc1_weight, self._fc1_bias)
+
+        def forward(self, x):
+            x = self._unwrap(x)
+            if not torch.is_floating_point(x):
+                x = x.float()
+            x = self.flatten(x)
+            x = self._apply_fc1(x)
+            x = self.act(x)
+            x = self.fc2(x)
+            return x
+
+    try:
+        NUM_CLASSES = int({{ ir.dataset.num_classes or 2 }})
+    except Exception:
+        NUM_CLASSES = 2
+
+    model = _RobustFallback(num_classes=NUM_CLASSES, hidden=256)
+
+# Safe loss & optimizer (only create optimizer if model has parameters)
+try:
+    loss_fn = torch.nn.CrossEntropyLoss()
+except Exception:
+    loss_fn = None
+
+try:
+    _params = list(model.parameters())
+    optimizer = torch.optim.Adam(_params, lr=1e-3) if _params else None
+except Exception:
+    optimizer = None

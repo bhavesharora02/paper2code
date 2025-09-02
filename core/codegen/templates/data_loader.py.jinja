@@ -1,36 +1,37 @@
-{% set mapping = mapping if mapping is defined else {} %}
-{% set ir = ir if ir is defined else {} %}
-{% set header_comment = header_comment if header_comment is defined else '' %}
-
 # Generated from {{ run_dir }} — DO NOT EDIT by hand
 import torch
 from torch.utils.data import Dataset, DataLoader
+
+# NUM_CLASSES rendered at generation time to avoid runtime dependency on `ir`
+NUM_CLASSES = {{ ((ir.get('dataset') or {}).get('num_classes')) | default(2) | int }}
 
 try:
     from transformers import AutoTokenizer
 except Exception:
     AutoTokenizer = None
 
-# --- Tiny datasets for smoke ---
 class TinyTextDataset(Dataset):
-    def __init__(self, tokenizer=None, max_length=128, length=64):
+    def __init__(self, tokenizer=None, max_length=128, length=64, num_classes: int = NUM_CLASSES):
         self.tokenizer = tokenizer
         self.max_length = max_length
-        # tiny toy corpus (binary labels)
-        self.data = [
-            ("good movie great acting", 1),
+        self.length = int(length)
+        # ensure at least 1 class
+        self.num_classes = max(1, int(num_classes))
+        base = [
+            ("good movie great acting", 1 if self.num_classes > 1 else 0),
             ("bad plot boring scenes", 0),
-            ("excellent visuals and story", 1),
+            ("excellent visuals and story", 1 if self.num_classes > 1 else 0),
             ("terrible pacing and sound", 0),
-        ] * (length // 4)
+        ]
+        self.data = (base * ((self.length // 4) + 1))[: self.length]
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         text, y = self.data[idx]
+        y = int(y) % self.num_classes  # defensive mod
         if self.tokenizer is None:
-            # produce a dummy tensor feature if tokenizer missing
             x = torch.randn(768)
             return {"inputs": x, "labels": torch.tensor(y, dtype=torch.long)}
         enc = self.tokenizer(
@@ -40,36 +41,35 @@ class TinyTextDataset(Dataset):
             max_length=self.max_length,
             return_tensors='pt',
         )
-        # squeeze batch dim
         enc = {k: v.squeeze(0) for k, v in enc.items()}
         return {"inputs": enc, "labels": torch.tensor(y, dtype=torch.long)}
 
+
 class TinyImageDataset(Dataset):
-    def __init__(self, size=224, num_classes={{ ir.get('dataset', {}).get('num_classes') or 2 }}, length=32):
-        # Use 224x224 to match common pretrained ViT/ResNet defaults
+    def __init__(self, size=224, num_classes: int = NUM_CLASSES, length=32):
         self.size = int(size)
         self.length = int(length)
-        self.num_classes = int(num_classes)
+        self.num_classes = max(1, int(num_classes))
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
         x = torch.rand(3, self.size, self.size)
-        y = torch.randint(0, self.num_classes, (1,)).item()
-        # Return a plain Tensor; Trainer will wrap as pixel_values when needed
+        if self.num_classes <= 1:
+            y = 0
+        else:
+            y = torch.randint(0, self.num_classes, (1,)).item()
         return {"inputs": x, "labels": torch.tensor(y, dtype=torch.long)}
 
 
 def build_dataloaders(config_path: str = None):
-    # Decide modality from IR
-    TASK = "{{ (ir.get('model', {}).get('task_type') or ir.get('task') or '')|lower }}"
-    DOMAIN = "{{ (ir.get('domain') or '')|lower }}"
+    TASK = "{{ (ir.get('model') or {}).get('task_type', '') | lower }}"
+    DOMAIN = "{{ (ir.get('domain') or '') | lower }}"
     is_text = ("nlp" in DOMAIN) or ("sequence" in TASK) or ("text" in TASK)
 
-    # Keep batch size tiny for smoke
     try:
-        batch_size = int({{ ir.get('hyperparameters', {}).get('batch_size') or 8 }})
+        batch_size = int((ir.get('hyperparameters') or {}).get('batch_size', 8))
     except Exception:
         batch_size = 8
     batch_size = max(1, min(batch_size, 8))
@@ -82,11 +82,11 @@ def build_dataloaders(config_path: str = None):
             tokenizer = None
 
     if is_text:
-        ds_train = TinyTextDataset(tokenizer)
-        ds_val = TinyTextDataset(tokenizer)
+        ds_train = TinyTextDataset(tokenizer=tokenizer, num_classes=NUM_CLASSES)
+        ds_val = TinyTextDataset(tokenizer=tokenizer, num_classes=NUM_CLASSES)
     else:
-        ds_train = TinyImageDataset()
-        ds_val = TinyImageDataset()
+        ds_train = TinyImageDataset(num_classes=NUM_CLASSES)
+        ds_val = TinyImageDataset(num_classes=NUM_CLASSES)
 
     train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(ds_val, batch_size=batch_size)
