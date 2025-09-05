@@ -55,7 +55,8 @@ def main():
         ir_path = run_dir / 'ir.json'
         mapping_path = run_dir / 'mapping.json'
         out_dir = run_dir / 'repo'
-        print(f"[generate_all] generating repo for {paper_id} → {out_dir}")
+        # use ASCII arrow to avoid Windows console encoding issues
+        print(f"[generate_all] generating repo for {paper_id} -> {out_dir}")
         generate_repo(ir_path, mapping_path, out_dir, templates_dir)
 
 if __name__ == '__main__':

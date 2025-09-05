@@ -1,6 +1,7 @@
 # core/codegen/generate_repo.py
 from __future__ import annotations
 import json
+import shutil
 from pathlib import Path
 from typing import Dict, Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -13,7 +14,10 @@ def _ensure_dir(p: Path):
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def generate_repo(ir_path: Path | str, mapping_path: Path | str, out_dir: Path | str, templates_dir: Path | str):
@@ -40,6 +44,18 @@ def generate_repo(ir_path: Path | str, mapping_path: Path | str, out_dir: Path |
     if not init_file.exists():
         init_file.write_text("# auto-generated package init\n", encoding="utf-8")
 
+    # ensure mapping.json is present in generated repo (tests expect it)
+    try:
+        # Prefer copying the original mapping file if it's an actual file
+        if mapping_path.exists():
+            shutil.copy2(str(mapping_path), str(out_dir / "mapping.json"))
+        elif mapping:
+            # Dump the loaded mapping dict to mapping.json for visibility
+            (out_dir / "mapping.json").write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+    except Exception:
+        # non-fatal: continue generation even if writing mapping fails
+        pass
+
     # prepare jinja environment
     env = Environment(
         loader=FileSystemLoader(str(templates_dir)),
@@ -52,11 +68,8 @@ def generate_repo(ir_path: Path | str, mapping_path: Path | str, out_dir: Path |
     # templates should use dict access (e.g. ir.get('dataset')) or safe filters.
     run_dir = str(out_dir.parent / out_dir.name)  # human friendly
     # run_module: dotted module path to execute trainer: derive from runs dir layout
-    # If out_dir is runs/<paper_run>/repo, create module path runs.<paper_run>.repo.trainer
     try:
-        # attempt to construct module path for readability in README templates
         parts = list(out_dir.resolve().parts)
-        # naive approach: find "runs" in path and create a module-like path from there
         if "runs" in parts:
             idx = parts.index("runs")
             module_parts = parts[idx:]  # runs, cv_vit_xxx, repo
@@ -67,10 +80,10 @@ def generate_repo(ir_path: Path | str, mapping_path: Path | str, out_dir: Path |
         run_module = out_dir.name + ".trainer"
 
     ctx = {
-    "ir": ir or {},
-    "mapping": mapping or {},
-    "run_dir": run_dir,
-    "run_module": run_module,
+        "ir": ir if ir is not None else {},
+        "mapping": mapping if mapping is not None else {},
+        "run_dir": run_dir,
+        "run_module": run_module,
     }
 
     # Render every .jinja file in templates_dir
@@ -82,5 +95,16 @@ def generate_repo(ir_path: Path | str, mapping_path: Path | str, out_dir: Path |
         _ensure_dir(outfile.parent)
         outfile.write_text(rendered, encoding="utf-8")
         print(f"[generate_repo] wrote {outfile}")
+
+    # Ensure README.md exists: some templates produced README (no ext)
+    try:
+        readme = out_dir / "README"
+        md = out_dir / "README.md"
+        if readme.exists() and not md.exists():
+            # rename to README.md for tests and usability
+            readme.rename(md)
+            print(f"[generate_repo] renamed README -> README.md in {out_dir}")
+    except Exception:
+        pass
 
     return out_dir

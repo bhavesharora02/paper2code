@@ -1,4 +1,16 @@
 # core/verify/metric_runner.py
+"""
+Parallel multi-seed metric runner.
+
+For each seed we:
+ - make a temporary copy of the repo/ into its own temp dir
+ - run `python trainer.py` with SEED set in env (and SCALED_RUN/USE_FAKE_DATA if requested)
+ - read metrics.json from the temp repo (if produced)
+ - return per-seed results
+
+The main function `run_metric_verification` preserves the previous return format but
+adds aggregate fields n_success and n_total, and supports parallel workers.
+"""
 from __future__ import annotations
 import json
 import subprocess
@@ -7,16 +19,19 @@ import time
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+import concurrent.futures
+import os
 
-# ---------- helpers ----------
+
 def _read_expected_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
+    """Read expected_metrics from artifacts/verification_report.json if present."""
     vr = run_dir / "artifacts" / "verification_report.json"
     if not vr.exists():
         return None
     try:
         obj = json.loads(vr.read_text(encoding="utf-8"))
-        if "expected_metrics" in obj and isinstance(obj["expected_metrics"], dict):
+        if "expected_metrics" in obj:
             return obj["expected_metrics"]
         if "key" in obj and "target" in obj:
             return {"key": obj["key"], "target": obj.get("target"), "tolerance_pct": obj.get("tolerance_pct")}
@@ -39,54 +54,104 @@ def _safe_get_metric_value(metrics: Dict[str, Any], key: str) -> Optional[float]
     if metrics is None or key not in metrics:
         return None
     try:
-        return float(metrics[key])
+        v = metrics[key]
+        return float(v)
     except Exception:
         return None
 
 
-def _is_lower_better_metric_name(key: str) -> bool:
-    # heuristics: treat losses/errors as lower-is-better
-    k = key.lower()
-    return ("loss" in k) or ("error" in k) or ("err" in k)
-
-
-def _compute_aggregate(values: List[float]) -> Dict[str, Any]:
-    agg: Dict[str, Any] = {"mean": None, "std": None, "count": 0, "n_success": 0, "n_total": 0}
-    if not values:
-        return agg
+def _run_seed_in_temp_repo(orig_repo: Path, seed: int, timeout_per_seed: int, scaled_run: bool, keep_temp: bool = False) -> Dict[str, Any]:
+    """
+    Copy orig_repo -> temp_dir, run trainer.py inside temp_dir with env SEED,
+    then read metrics.json and return per-seed result. Cleans up temp_dir unless keep_temp True.
+    """
+    tempdir = Path(tempfile.mkdtemp(prefix=f"mr_seed_{seed}_"))
     try:
-        agg["mean"] = float(statistics.mean(values))
-        agg["std"] = float(statistics.pstdev(values)) if len(values) > 1 else 0.0
-        agg["count"] = len(values)
-    except Exception:
-        agg["mean"] = None
-        agg["std"] = None
-        agg["count"] = len(values)
-    return agg
+        # copy tree (raises on existence, but tempdir is empty)
+        tmp_repo = tempdir / "repo"
+        shutil.copytree(orig_repo, tmp_repo)
+    except Exception as e:
+        # copy failed: return error
+        if not keep_temp:
+            try:
+                shutil.rmtree(tempdir)
+            except Exception:
+                pass
+        return {"seed": seed, "ok": False, "returncode": 1, "stdout": "", "stderr": f"copy failed: {e}", "metrics": None, "tempdir": str(tempdir)}
+
+    trainer = tmp_repo / "trainer.py"
+    if not trainer.exists():
+        if not keep_temp:
+            try:
+                shutil.rmtree(tempdir)
+            except Exception:
+                pass
+        return {"seed": seed, "ok": False, "returncode": 127, "stdout": "", "stderr": f"{trainer} not found", "metrics": None, "tempdir": str(tempdir)}
+
+    env = dict(os.environ)
+    env["SEED"] = str(seed)
+    if scaled_run:
+        env["SCALED_RUN"] = "1"
+        env["USE_FAKE_DATA"] = "1"
+
+    try:
+        proc = subprocess.run(
+            ["python", str(trainer)],
+            cwd=str(tmp_repo),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_per_seed,
+        )
+        ok = proc.returncode == 0
+        stdout = proc.stdout
+        stderr = proc.stderr
+        metrics = _load_metrics_file(tmp_repo)
+        result = {
+            "seed": seed,
+            "ok": ok,
+            "returncode": proc.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "metrics": metrics,
+            "tempdir": str(tempdir),
+        }
+    except subprocess.TimeoutExpired as te:
+        result = {"seed": seed, "ok": False, "returncode": 124, "stdout": "", "stderr": f"timeout: {te}", "metrics": None, "tempdir": str(tempdir)}
+    except Exception as e:
+        result = {"seed": seed, "ok": False, "returncode": 1, "stdout": "", "stderr": f"exception: {e}", "metrics": None, "tempdir": str(tempdir)}
+
+    # cleanup unless user asked to keep temp dirs
+    if not os.environ.get("MR_KEEP_TEMP") and not os.environ.get("MR_KEEP_TEMPDIR"):
+        try:
+            shutil.rmtree(tempdir)
+        except Exception:
+            pass
+
+    return result
 
 
-# ---------- main runner ----------
 def run_metric_verification(
     run_dir: str,
     seeds: List[int] = (0, 1, 2),
     timeout_per_seed: int = 120,
     scaled_run: bool = False,
-    use_fake_data_flag: bool = True,
+    max_workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Run trainer.py in an isolated copy of runs/<run>/repo for each seed (so seed runs don't clobber files).
-    Collect metrics.json per-seed, compute aggregate stats, compare to expected metrics.
+    Run trainer.py for multiple seeds in parallel (each seed in its own temp repo copy).
 
-    Returns:
-      {
-        "per_seed": [ { seed, ok, returncode, stdout, stderr, metrics } ],
-        "aggregate": { mean, std, count, n_success, n_total },
-        "cmp": {...} or None,
-        "notes": [...]
-      }
+    Args:
+      - run_dir: path to runs/<run>
+      - seeds: list of integer seeds
+      - timeout_per_seed: seconds per seed
+      - scaled_run: set scaled env flags for small datasets
+      - max_workers: how many seeds to run concurrently (defaults to min(len(seeds), 4))
+
+    Returns same structure as before plus n_success/n_total in aggregate.
     """
     run_path = Path(run_dir)
-    repo_src = run_path / "repo"
+    repo = run_path / "repo"
     artifacts = run_path / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
     report_path = artifacts / "metric_report.json"
@@ -100,131 +165,70 @@ def run_metric_verification(
     numeric_values: List[float] = []
     notes: List[str] = []
 
-    # Will count successes (ok True and metric available)
-    n_success = 0
-    n_total = 0
+    # determine workers
+    if max_workers is None:
+        max_workers = min(max(1, len(seeds)), 4)
 
-    for sd in seeds:
-        seed = int(sd)
-        n_total += 1
-        # Make isolated copy of repo for this seed
-        with tempfile.TemporaryDirectory(prefix=f"mr_seed_{seed}_") as td:
-            repo_copy = Path(td) / "repo"
-            try:
-                # copytree wants destination not to exist
-                shutil.copytree(repo_src, repo_copy)
-            except Exception as e:
-                # fallback: copy files individually
-                repo_copy.mkdir(parents=True, exist_ok=True)
-                for p in repo_src.glob("**/*"):
-                    if p.is_dir():
-                        continue
-                    rel = p.relative_to(repo_src)
-                    dest = repo_copy / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.copy2(p, dest)
-                    except Exception:
-                        pass
+    # Submit seed jobs in parallel
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for sd in seeds:
+            seed = int(sd)
+            fut = ex.submit(_run_seed_in_temp_repo, repo, seed, timeout_per_seed, scaled_run, False)
+            futures[fut] = seed
 
-            trainer = repo_copy / "trainer.py"
-            if not trainer.exists():
-                per_seed_results.append(
-                    {
-                        "seed": seed,
-                        "ok": False,
-                        "returncode": 127,
-                        "stdout": "",
-                        "stderr": f"{trainer} not found",
-                        "metrics": None,
-                    }
-                )
-                continue
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            # remove tempdir from res before saving if present (we keep included for debug)
+            per_seed_results.append({k: v for k, v in res.items() if True})  # keep everything
+            metrics = res.get("metrics")
+            # prioritize explicit expected key
+            if metrics is not None:
+                if key:
+                    val = _safe_get_metric_value(metrics, key)
+                    if val is not None:
+                        numeric_values.append(val)
+                else:
+                    for candidate in ("accuracy", "acc", "top1", "loss"):
+                        v = _safe_get_metric_value(metrics, candidate)
+                        if v is not None:
+                            numeric_values.append(v)
+                            break
 
-            env = dict(**subprocess.os.environ)
-            env["SEED"] = str(seed)
-            if scaled_run:
-                env["SCALED_RUN"] = "1"
-            if use_fake_data_flag:
-                # trainers can check USE_FAKE_DATA=1 to use tiny datasets for quick verification.
-                env["USE_FAKE_DATA"] = "1"
+    # compute aggregate
+    agg: Dict[str, Any] = {"mean": None, "std": None, "count": 0, "n_success": 0, "n_total": len(seeds)}
+    if numeric_values:
+        try:
+            agg["mean"] = float(statistics.mean(numeric_values))
+            agg["std"] = float(statistics.pstdev(numeric_values)) if len(numeric_values) > 1 else 0.0
+            agg["count"] = len(numeric_values)
+        except Exception:
+            agg["mean"] = None
+            agg["std"] = None
+            agg["count"] = len(numeric_values)
+    else:
+        notes.append("No numeric per-seed metrics were found; aggregate not computed.")
 
-            # run trainer in the isolated repo_copy
-            try:
-                proc = subprocess.run(
-                    ["python", str(trainer)],
-                    cwd=str(repo_copy),
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_per_seed,
-                )
-                ok = proc.returncode == 0
-                stdout = proc.stdout
-                stderr = proc.stderr
-                # read metrics from copy repo
-                metrics = _load_metrics_file(repo_copy)
-                per_seed_results.append(
-                    {
-                        "seed": seed,
-                        "ok": ok,
-                        "returncode": proc.returncode,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "metrics": metrics,
-                    }
-                )
-
-                # attempt to extract numeric value for aggregate
-                extracted = None
-                if metrics:
-                    if key:
-                        extracted = _safe_get_metric_value(metrics, key)
-                    else:
-                        # try common candidates (prefer accuracy over loss)
-                        for c in ("accuracy", "acc", "top1", "loss"):
-                            v = _safe_get_metric_value(metrics, c)
-                            if v is not None:
-                                extracted = v
-                                # if this was a loss we still record it, but mark lower-is-better detection later
-                                break
-
-                if extracted is not None:
-                    numeric_values.append(extracted)
-                    if ok:
-                        n_success += 1
-
-            except subprocess.TimeoutExpired as te:
-                per_seed_results.append(
-                    {"seed": seed, "ok": False, "returncode": 124, "stdout": "", "stderr": f"timeout: {te}", "metrics": None}
-                )
-            except Exception as e:
-                per_seed_results.append({"seed": seed, "ok": False, "returncode": 1, "stdout": "", "stderr": f"exception: {e}", "metrics": None})
-
-    agg = _compute_aggregate(numeric_values)
-    # add n_success and n_total to aggregate for CI clarity
-    agg["n_success"] = n_success
-    agg["n_total"] = n_total
+    # compute n_success: seeds with ok True
+    try:
+        agg["n_success"] = sum(1 for r in per_seed_results if bool(r.get("ok")))
+    except Exception:
+        agg["n_success"] = 0
 
     cmp = None
-    # if expected provided and we have aggregate mean, compare respecting direction
     if key and target is not None and agg["mean"] is not None:
         try:
-            mean_val = agg["mean"]
-            lower_is_better = _is_lower_better_metric_name(key)
-            if lower_is_better:
-                # compute relative distance for lower-is-better: (target - mean)/|target|
-                rel = (target - mean_val) / max(1e-12, abs(target))
-            else:
-                rel = (mean_val - target) / max(1e-12, abs(target))
-            rel_pct = abs(rel) * 100.0
+            rel = abs(agg["mean"] - target) / max(1e-12, abs(target))
+            rel_pct = rel * 100.0
+            # determine direction: later we may prefer "higher_is_better" for accuracy-like keys
+            direction = "higher_is_better"
             passed = rel_pct <= (tolerance or 0.0)
             cmp = {
                 "pass": bool(passed),
                 "expected": {"key": key, "target": target, "tolerance_pct": tolerance},
-                "actual": {key: mean_val},
+                "actual": {key: agg["mean"]},
                 "relative_pct_diff": rel_pct,
-                "direction": "lower_is_better" if lower_is_better else "higher_is_better",
+                "direction": direction,
             }
             if not passed:
                 notes.append(f"{rel_pct:.2f}% away from target (> tol {tolerance}%).")
@@ -242,7 +246,6 @@ def run_metric_verification(
     return out
 
 
-# ---------- CLI ----------
 if __name__ == "__main__":
     import argparse
 
@@ -251,8 +254,9 @@ if __name__ == "__main__":
     ap.add_argument("--seeds", default="0,1,2", help="comma separated seeds")
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--scaled", action="store_true")
+    ap.add_argument("--workers", type=int, default=None, help="max concurrent seed runs")
     args = ap.parse_args()
 
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
-    res = run_metric_verification(args.run, seeds=seeds, timeout_per_seed=args.timeout, scaled_run=args.scaled)
+    res = run_metric_verification(args.run, seeds=seeds, timeout_per_seed=args.timeout, scaled_run=args.scaled, max_workers=args.workers)
     print(json.dumps(res, indent=2))

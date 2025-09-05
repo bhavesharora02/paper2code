@@ -9,6 +9,9 @@ HIDDEN = {{ ((ir.get('hyperparameters') or {}).get('hidden_size')) | default(128
 try:
 {% for line in (mapping.get('imports') or []) %}
     {{ line }}
+{% else %}
+    # no optional imports provided by mapping — keep a pass so try-block is non-empty
+    pass
 {% endfor %}
 except Exception as e:
     print(f"[model] optional import failed: {e}")

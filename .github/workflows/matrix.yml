@@ -1,0 +1,55 @@
+name: CI — Smoke matrix
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke-matrix:
+    name: Smoke tests — ${{ matrix.paper }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        paper: [cv_vit, nlp_bert, ml_xgb]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          # install test deps. add extras if your CI runner needs them
+          pip install pytest pyyaml
+
+      - name: Show python / pip
+        run: |
+          python -V
+          pip -V
+
+      - name: Run smoke scenario for matrix paper
+        env:
+          PAPER: ${{ matrix.paper }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          # ensure a clean runs/ dir
+          rm -rf runs || true
+          mkdir -p runs
+
+          # parse all (creates runs/<paper>_<ts>/parsed.json)
+          python -m apps.cli.parse_all --config papers.yaml --out runs/
+
+          # generate repos for parsed runs
+          python -m apps.cli.generate_all --config papers.yaml --out runs/
+
+          # run smoke for all (fast); we could restrict but keep simple
+          python -m apps.cli.run_smoke_all --config papers.yaml --out runs/ --timeout 300
+
+          # Run the per-paper smoke test (only the single test that checks PAPER)
+          pytest -q tests/ci/test_smoke_matrix_job.py::test_smoke_matrix_job -k "$PAPER" -q
