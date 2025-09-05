@@ -1,0 +1,93 @@
+name: CI — Smoke matrix (debug friendly)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke-matrix:
+    name: Smoke tests — ${{ matrix.paper }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        paper: [cv_vit, nlp_bert, ml_xgb]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install deps (pytest, pyyaml)
+        run: |
+          python -V
+          python -m pip install --upgrade pip
+          pip install pytest pyyaml
+        shell: bash
+
+      - name: Run parse/generate/smoke (verbose)
+        env:
+          PAPER: ${{ matrix.paper }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -ex
+
+          # clean runs/
+          rm -rf runs || true
+          mkdir -p runs
+
+          echo "=== running parse_all ==="
+          python -m apps.cli.parse_all --config papers.yaml --out runs/ || echo "parse_all exited $?"
+
+          echo "=== runs dir after parse_all ==="
+          ls -R runs || true
+
+          echo "=== running generate_all ==="
+          python -m apps.cli.generate_all --config papers.yaml --out runs/ || echo "generate_all exited $?"
+
+          echo "=== runs dir after generate_all ==="
+          ls -R runs || true
+
+          echo "=== running run_smoke_all ==="
+          python -m apps.cli.run_smoke_all --config papers.yaml --out runs/ --timeout 300 || echo "run_smoke_all exited $?"
+
+          echo "=== runs dir after run_smoke_all ==="
+          ls -R runs || true
+
+          echo "=== show artifacts for $PAPER (if any) ==="
+          # show latest run for this paper
+          latest=$(ls -dt runs/${PAPER}_* 2>/dev/null | head -n1 || true)
+          echo "latest run: $latest"
+          if [ -n "$latest" ]; then
+            echo "artifacts listing:"
+            ls -l "$latest/artifacts" || true
+            echo "verification_report.json (if present):"
+            if [ -f "$latest/artifacts/verification_report.json" ]; then
+              echo "---- verification_report.json ----"
+              cat "$latest/artifacts/verification_report.json"
+              echo "----------------------------------"
+            fi
+          fi
+        shell: bash
+
+      - name: Run per-paper pytest check
+        env:
+          PAPER: ${{ matrix.paper }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set -ex
+          pytest -q tests/ci/test_smoke_matrix_job.py::test_smoke_matrix_job -q
+        shell: bash
+
+      - name: Upload runs/ directory for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runs-${{ matrix.paper }}
+          path: runs
